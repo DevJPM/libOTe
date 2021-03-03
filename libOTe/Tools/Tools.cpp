@@ -184,6 +184,24 @@ namespace osuCrypto {
 
     }
 
+    void eklundh_transpose128x2048(std::array<std::array<block, 16>, 128>& inOut)
+    {
+
+
+        for (u64 i = 0; i < 16; ++i)
+        {
+            std::array<block, 128> sub;
+            for (u64 j = 0; j < 128; ++j)
+                sub[j] = inOut[j][i];
+
+            eklundh_transpose128(sub);
+
+            for (u64 j = 0; j < 128; ++j)
+                inOut[j][i] = sub[j];
+        }
+
+    }
+
 
 
 

@@ -1,6 +1,7 @@
 #pragma once
 // This file and the associated implementation has been placed in the public domain, waiving all copyright. No restrictions are placed on its use.  
 #include "libOTe/config.h"
+#define ENABLE_IKNP
 #ifdef ENABLE_IKNP
 
 #include "libOTe/TwoChooseOne/OTExtInterface.h"

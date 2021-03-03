@@ -72,6 +72,7 @@ namespace osuCrypto {
 
     void eklundh_transpose128(std::array<block, 128>& inOut);
     void eklundh_transpose128x1024(std::array<std::array<block, 8>, 128>& inOut);
+    void eklundh_transpose128x2048(std::array<std::array<block, 16>, 128>& inOut);
 
 #ifdef OC_ENABLE_SSE2
     void sse_transpose128(std::array<block, 128>& inOut);
@@ -98,6 +99,11 @@ namespace osuCrypto {
 #else
         eklundh_transpose128x1024(inOut);
 #endif
+    }
+
+    inline void transpose128x2048(std::array<std::array<block, 16>, 128>& inOut)
+    {
+        eklundh_transpose128x2048(inOut);
     }
 
 

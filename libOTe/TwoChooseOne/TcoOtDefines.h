@@ -9,6 +9,7 @@ namespace osuCrypto
 { 
      const u64 commStepSize(512);
      const u64 superBlkSize(8);
+	 //const u64 superBlkSize(16);
 
 	enum class SilentBaseType {Base, BaseExtend};
 

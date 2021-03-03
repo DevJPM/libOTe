@@ -7,6 +7,10 @@
 
 #include "TcoOtDefines.h"
 
+#include <immintrin.h>
+
+#include <iostream>
+
 namespace osuCrypto
 {
     using namespace std;
@@ -47,6 +51,7 @@ namespace osuCrypto
         }
     }
 
+    __attribute__((target("avx512f,vaes,avx512vl")))
     void IknpOtExtSender::send(
         span<std::array<block, 2>> messages,
         PRNG& prng,
@@ -94,34 +99,72 @@ namespace osuCrypto
                 uIter = (block*)u.data();
             }
 
+            const __m512i ctr_offset = _mm512_set_epi64(0, 3, 0, 2, 0, 1, 0, 0);
+            const __m512i add_offset = _mm512_set_epi64(0, 4, 0, 0, 0, 4, 0, 4);
+
             // transpose 128 columns at at time. Each column will be 128 * superBlkSize = 1024 bits long.
-            for (u64 colIdx = 0; colIdx < 128; ++colIdx)
+            for (u64 colIdx = 0; colIdx < 128; colIdx+=2)
             {
+                // TODO: Only do 8 blocks, but from two subsequent iterations!
+                __m512i ctData[2];
+                __m512i ntData[2];
+                __m512i ctKeys[11];
+                __m512i ntKeys[11];
+                __m512i ctctr = _mm512_set_epi64(0, mGens[colIdx].mBlockIdx, 0, mGens[colIdx].mBlockIdx, 0, mGens[colIdx].mBlockIdx, 0, mGens[colIdx].mBlockIdx);
+                __m512i ntctr = _mm512_set_epi64(0, mGens[colIdx+1].mBlockIdx, 0, mGens[colIdx + 1].mBlockIdx, 0, mGens[colIdx + 1].mBlockIdx, 0, mGens[colIdx + 1].mBlockIdx);
+                ctctr = _mm512_add_epi64(ctctr, ctr_offset);
+                ntctr = _mm512_add_epi64(ntctr, ctr_offset);
+
+                for (size_t i = 0; i < 11; ++i) {
+                    ctKeys[i] = _mm512_broadcast_i32x4(mGens[colIdx].mAes.mRoundKey[i]);
+                    ntKeys[i] = _mm512_broadcast_i32x4(mGens[colIdx+1].mAes.mRoundKey[i]);
+                }
+
+                for (size_t w = 0; w < 2; ++w)
+                {
+                    ctData[w] = ctctr;
+                    ntData[w] = ntctr;
+                    ctctr = _mm512_add_epi64(ctctr, add_offset);
+                    ntctr = _mm512_add_epi64(ntctr, add_offset);
+
+                    ctData[w] = _mm512_xor_si512(ctData[w], ctKeys[0]);
+                    ntData[w] = _mm512_xor_si512(ntData[w], ntKeys[0]);
+                }
+
+                for (size_t r = 1; r < 10; ++r)
+                    for (size_t w = 0; w < 2; ++w)
+                    {
+                        ctData[w] = _mm512_aesenc_epi128(ctData[w], ctKeys[r]);
+                        ntData[w] = _mm512_aesenc_epi128(ntData[w], ntKeys[r]);
+                    }
+
+                for (size_t w = 0; w < 2; ++w) {
+                    ctData[w] = _mm512_aesenclast_epi128(ctData[w], ctKeys[10]);
+                    ntData[w] = _mm512_aesenclast_epi128(ntData[w], ntKeys[10]);
+                    __m128i ccData = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cIter));
+                    __m128i ncData = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cIter+1));
+                    __m512i cuData = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(uIter + 4 * w));
+                    __m512i nuData = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(uIter + 8 + 4 * w));
+                    __m512i widecCData = _mm512_broadcast_i32x4(ccData);
+                    __m512i widenCData = _mm512_broadcast_i32x4(ncData);
+
+                    cuData = _mm512_and_si512(cuData, widecCData);
+                    nuData = _mm512_and_si512(nuData, widenCData);
+                    ctData[w] = _mm512_xor_si512(ctData[w], cuData);
+                    ntData[w] = _mm512_xor_si512(ntData[w], nuData);
+                    _mm512_storeu_si512(reinterpret_cast<__m512i*>(uIter + 4 * w), cuData);
+                    _mm512_storeu_si512(reinterpret_cast<__m512i*>(tIter + 4 * w), ctData[w]);
+                    _mm512_storeu_si512(reinterpret_cast<__m512i*>(uIter + 8 + 4 * w), nuData);
+                    _mm512_storeu_si512(reinterpret_cast<__m512i*>(tIter + 8+ 4 * w), ntData[w]);
+                }
+
                 // generate the columns using AES-NI in counter mode.
-                mGens[colIdx].mAes.ecbEncCounterMode(mGens[colIdx].mBlockIdx, superBlkSize, tIter);
                 mGens[colIdx].mBlockIdx += superBlkSize;
+                mGens[colIdx+1].mBlockIdx += superBlkSize;
 
-                uIter[0] = uIter[0] & *cIter;
-                uIter[1] = uIter[1] & *cIter;
-                uIter[2] = uIter[2] & *cIter;
-                uIter[3] = uIter[3] & *cIter;
-                uIter[4] = uIter[4] & *cIter;
-                uIter[5] = uIter[5] & *cIter;
-                uIter[6] = uIter[6] & *cIter;
-                uIter[7] = uIter[7] & *cIter;
-
-                tIter[0] = tIter[0] ^ uIter[0];
-                tIter[1] = tIter[1] ^ uIter[1];
-                tIter[2] = tIter[2] ^ uIter[2];
-                tIter[3] = tIter[3] ^ uIter[3];
-                tIter[4] = tIter[4] ^ uIter[4];
-                tIter[5] = tIter[5] ^ uIter[5];
-                tIter[6] = tIter[6] ^ uIter[6];
-                tIter[7] = tIter[7] ^ uIter[7];
-
-                ++cIter;
-                uIter += 8;
-                tIter += 8;
+                cIter += 2;
+                uIter += 16;
+                tIter += 16;
             }
 
             // transpose our 128 columns of 1024 bits. We will have 1024 rows,
@@ -195,7 +238,9 @@ namespace osuCrypto
             }
         }
 #else
-
+        __m512i fixed_key[11];
+        for (size_t i = 0; i < 11; ++i)
+            fixed_key[i] = _mm512_broadcast_i32x4(mAesFixedKey.mRoundKey[i]);
 
         std::array<block, 8> aesHashTemp;
 
@@ -206,21 +251,32 @@ namespace osuCrypto
             u64 stop = std::min<u64>(messages.size(), doneIdx + 128);
 
             auto length = 2 * (stop - doneIdx);
-            auto steps = length / 8;
+            auto steps = length / 16; 
+            
             block* mIter = messages[doneIdx].data();
+
             for (u64 i = 0; i < steps; ++i)
             {
-                mAesFixedKey.ecbEncBlocks(mIter, 8, aesHashTemp.data());
-                mIter[0] = mIter[0] ^ aesHashTemp[0];
-                mIter[1] = mIter[1] ^ aesHashTemp[1];
-                mIter[2] = mIter[2] ^ aesHashTemp[2];
-                mIter[3] = mIter[3] ^ aesHashTemp[3];
-                mIter[4] = mIter[4] ^ aesHashTemp[4];
-                mIter[5] = mIter[5] ^ aesHashTemp[5];
-                mIter[6] = mIter[6] ^ aesHashTemp[6];
-                mIter[7] = mIter[7] ^ aesHashTemp[7];
+                __m512i data[4];
+                __m512i whitening[4];
 
-                mIter += 8;
+                for (size_t w = 0; w < 4; ++w) {
+                    data[w] = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(mIter + 4 * w));
+                    whitening[w] = data[w];
+                    data[w] = _mm512_xor_si512(data[w], fixed_key[0]);
+                }
+
+                for (size_t r = 1; r < 10; ++r)
+                    for (size_t w = 0; w < 4; ++w)
+                        data[w] = _mm512_aesenc_epi128(data[w], fixed_key[r]);
+
+                for (size_t w = 0; w < 4; ++w) {
+                    data[w] = _mm512_aesenclast_epi128(data[w], fixed_key[10]);
+                    data[w] = _mm512_xor_si512(data[w], whitening[w]);
+                    _mm512_storeu_si512(reinterpret_cast<__m512i*>(mIter + 4 * w), data[w]);
+                }
+
+                mIter += 16;
             }
 
             auto rem = length - steps * 8;
